@@ -1,0 +1,304 @@
+---
+title: "Pokemon Pocket Data Tracking"
+output: flexdashboard::flex_dashboard
+runtime: shiny
+---
+
+```{r setup, include=FALSE}
+# Load required libraries
+library(shiny)
+library(googlesheets4)
+library(ggplot2)
+library(dplyr)
+library(tidyr)
+library(shinydashboard)
+library(janitor)
+library(kableExtra)
+library(DT)
+library(snakecase)
+
+gs4_deauth()
+# Read the Google Sheet
+gsheet_url <- ('https://docs.google.com/spreadsheets/d/1CDx8xPZz3phpuswtrXk_ut-N_jk_jw4Orh_hT1EohgQ/edit?usp=sharing')
+raw_data <- read_sheet(gsheet_url) 
+
+data <- raw_data %>% 
+  clean_names() %>% 
+  mutate(
+    deck =  to_title_case(what_deck_did_you_play),
+    opponent = to_title_case(what_deck_did_your_opponent_play),
+    first = to_title_case(first_or_second),
+    result = to_title_case(win_lose_tie)
+  )
+ 
+```
+
+```{r}
+# UI inputs to filter data
+ui <- fluidPage(
+    sidebarLayout(
+        sidebarPanel(
+            selectInput("your_name", "Your name", choices = unique(data$your_name), selected = NULL)
+        ),
+        mainPanel(
+            plotOutput("chart"),
+            fluidRow(
+                column(6, plotOutput("pie_chart_first")),
+                column(6, plotOutput("pie_chart_second"))
+            )
+        )
+        
+    )
+)
+
+ui2 <- fluidPage(
+    sidebarLayout(
+        sidebarPanel(
+            selectInput("your_name", "Your name", choices = unique(data$your_name), selected = NULL),
+          uiOutput("deck")
+        ),
+        mainPanel(
+          fluidRow(
+                column(6, plotOutput("pie_chart_first")),
+                column(6, plotOutput("pie_chart_second"))
+            ),
+            DTOutput("table", height= 400)
+            
+        )
+        
+    )
+)
+
+ui3 <- fluidPage(
+  
+        mainPanel(
+          fluidRow(
+            DTOutput("table", height= 600)
+            
+          )
+        )
+        
+    
+)
+```
+
+# All decks
+```{r}
+# Server logic to filter data and render the chart
+server <- function(input, output, session) {
+
+    # Reactive to filter data based on selected deck
+    filtered_data <- reactive({
+        data %>%
+            filter(your_name %in% input$your_name) %>% 
+            count(deck, result) %>%
+            group_by(deck) %>%
+            mutate(percent = n / sum(n) * 100)  # Calculate percentage for each result within each deck %>% 
+            
+    })
+    
+    # Calculate percentages for pie chart (First)
+    filtered_first <- reactive({
+        data %>%
+            filter(your_name %in% input$your_name) %>% 
+            filter(first == "First") %>%
+            count(result) %>%
+            mutate(
+              percent = n / sum(n) * 100,
+              label = paste0(round(percent,1),"% (",n,")")) %>% 
+            arrange(result) %>% 
+            mutate(
+              ypos = cumsum(percent)- 0.5*percent,
+              #result = factor(result, levels=result[order(-(percent))], ordered=TRUE)
+            )
+    })
+
+    # Calculate percentages for pie chart (Second)
+    filtered_second <- reactive({
+        data %>%
+            filter(your_name %in% input$your_name) %>% 
+            count(result) %>%
+            mutate(
+              percent = n / sum(n) * 100,
+             label = paste0(round(percent,1),"% (",n,")")) %>% 
+            arrange(result) %>% 
+            mutate(
+              ypos = cumsum(percent) - 0.5*percent,
+              #result = factor(result, levels=result[order(-(percent))], ordered=TRUE)
+            )
+    })
+
+    # Render the stacked 100% bar chart
+    output$chart <- renderPlot({
+        ggplot(filtered_data(), aes(x = deck, fill = result, y = percent)) +
+            geom_bar(position="fill",stat = "identity") +
+            coord_flip() + 
+            scale_y_continuous(labels = scales::percent_format(scale = 1)) +  # Format y-axis as percentage
+            labs(title = "Win % by Deck",
+                 x = "Deck", 
+                 y = "Percentage") +
+            theme_minimal() +
+            geom_text(aes(label = paste0(round(percent,1),"% (",n,")")),
+                      stat = "identity",
+                      colour = "white",
+                      position = position_fill(vjust = 0.5))+
+            theme(axis.text.x = element_text(angle = 45, hjust = 1, size = 5))  # Rotate x-axis labels for readability
+    })
+    
+    # Render Pie Chart for "First"
+    output$pie_chart_first <- renderPlot({
+        ggplot(filtered_first(), aes( x= "", y = percent, fill = result)) +
+            geom_bar(stat = "identity", width = 1, alpha = 0.8) +
+            coord_polar(theta = "y", start = 0) +
+            scale_y_continuous(labels = scales::percent_format(scale = 1)) +   # Show percentages
+            labs(title = "Win % Going First") +
+            theme_void() + 
+            geom_text(aes(label = label), size=5, color = "white", position=position_stack(vjust = 0.5))+
+            theme(legend.title = element_blank())
+    })
+
+    # Render Pie Chart for "Second"
+    output$pie_chart_second <- renderPlot({
+        ggplot(filtered_second(), aes( x= "" ,y = percent, fill = result)) +
+            geom_bar(stat = "identity", width = 1, alpha = 0.8) +
+            coord_polar(theta = "y", start = 0) +
+            scale_y_continuous(labels = scales::percent_format(scale = 1)) +   # Show percentages
+            labs(title = "Win % Going Second") +
+            theme_void() +
+            geom_text(aes(label = label), size=5, color = "white", position=position_stack(vjust = 0.5))+
+            theme(legend.title = element_blank())
+    })
+}
+
+shinyApp(ui, server)
+
+```
+# By Deck
+```{r}
+# Server logic to filter data and render the chart
+server <- function(input, output, session) {
+
+  output$deck <- renderUI({
+    decks <- data %>% 
+      filter(your_name %in% input$your_name) %>% 
+      pull(deck) %>% 
+      unique()
+    selectInput("deck", "Deck", choices = decks, selected = NULL)
+  })
+  
+  # Reactive to filter data based on selected deck
+    filtered_data <- reactive({
+        data %>%
+            filter(your_name %in% input$your_name) %>% 
+            filter(deck %in% input$deck)
+            
+    })
+    
+    
+    # Calculate percentages for pie chart (First)
+    filtered_first <- reactive({
+        data %>%
+            filter(deck %in% input$deck) %>%
+            filter(your_name %in% input$your_name) %>% 
+            filter(first == "First") %>%
+            count(result) %>%
+            mutate(
+              percent = n / sum(n) * 100,
+              label = paste0(round(percent,1),"% (",n,")")) %>% 
+            arrange(result) %>% 
+            mutate(
+              ypos = cumsum(percent)- percent,
+              #result = factor(result, levels=result[order((percent))], ordered=TRUE)
+            )
+    })
+
+    # Calculate percentages for pie chart (Second)
+    filtered_second <- reactive({
+        data %>%
+            filter(deck %in% input$deck) %>%
+            filter(your_name %in% input$your_name) %>%
+            filter(first=="Second") %>% 
+            count(result) %>%
+            mutate(
+              percent = n / sum(n) * 100,
+              label = paste0(round(percent,1),"% (",n,")")) %>% 
+            arrange(result) %>% 
+            mutate(
+              ypos = cumsum(percent)-percent,
+              #result = factor(result, levels=result[order((percent))], ordered=TRUE)
+            )
+    })
+
+    # Render the stacked 100% bar chart
+    output$table <- renderDT({
+      filtered_data() %>% 
+        group_by(opponent) %>% 
+        summarize(
+          Games = n(),
+          n_first = sum(first=="First",na.rm=T),
+          n_second = sum(first=="Second",na.rm=T),
+          `Win %` = round(sum(result=="Win",na.rm=T)/n() * 100,1),
+          `Win % going First` = round(sum(result=="Win" &  first == "First",na.rm=T)/n_first * 100,1),
+          `Win % going Second` = round(sum(result=="Win" & first == "Second",na.rm=T)/n_second * 100,1),
+        ) %>% 
+        rename(Opponent=opponent) %>% 
+        arrange(-Games) %>% 
+        select(Opponent,Games, starts_with("Win")) %>% 
+          datatable(.,rownames = FALSE)})
+      
+    
+    # Render Pie Chart for "First"
+    output$pie_chart_first <- renderPlot({
+        ggplot(filtered_first(), aes( x= "", y = percent, fill = result)) +
+            geom_bar(stat = "identity", width = 1, alpha = 0.8) +
+            coord_polar(theta = "y", start = 0) +
+            scale_y_continuous(labels = scales::percent_format(scale = 1)) +   # Show percentages
+            labs(title = "Win % Going First") +
+            theme_void() + 
+            geom_text(aes(label = label), size=5, color = "white", position=position_stack(vjust = 0.5))+
+            theme(legend.title = element_blank())
+    })
+
+    # Render Pie Chart for "Second"
+    output$pie_chart_second <- renderPlot({
+        ggplot(filtered_second(), aes( x= "" ,y = percent, fill = result)) +
+            geom_bar(stat = "identity", width = 1, alpha = 0.8) +
+            coord_polar(theta = "y", start = 0) +
+            scale_y_continuous(labels = scales::percent_format(scale = 1)) +   # Show percentages
+            labs(title = "Win % Going Second") +
+            theme_void() +
+            geom_text(aes(label = label), size=5, color = "white", position=position_stack(vjust = 0.5))+
+            theme(legend.title = element_blank())
+    })
+}
+
+shinyApp(ui2, server)
+
+```
+
+# Everyone
+```{r}
+server <- function(input, output, session) {
+    output$table <- renderDT({
+      data %>% 
+        mutate(
+          ind_deck = paste0(your_name,"'s ",deck)
+        ) %>% 
+        group_by(ind_deck) %>% 
+        summarize(
+          Games = n(),
+          Wins = sum(result == "Win"),
+          Losses = sum(result == "Lose"),
+          Ties = sum(result=="Tie"),
+          `Win %` = round(sum(result=="Win",na.rm=T)/n() * 100,1),
+        ) %>% 
+        rename(`Player - Deck` =ind_deck) %>% 
+        arrange(-Wins) %>% 
+        select(`Player - Deck`,Wins, Losses, Ties, `Win %`) %>% 
+          datatable(.,rownames = FALSE)
+      })
+}
+shinyApp(ui3, server)
+
+
+```
